@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Get Firebase ID Token</title>
+
+  <!-- 1) 100 % working compat SDK (v9.6.11 is stable & small) -->
+  <script src="https://www.gstatic.com/firebasejs/9.6.11/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.6.11/firebase-auth-compat.js"></script>
+
+  <script>
+    /* 2) ---- YOUR firebaseConfig (copy exactly from console) ---- */
+    const firebaseConfig = {
+      apiKey: "AIzaSyAg91PXRWx50v6Js-flFWPWvXb5t7yb_no",
+      authDomain: "school-risk-app.firebaseapp.com",
+      projectId: "school-risk-app",
+      storageBucket: "school-risk-app.firebasestorage.app",
+      messagingSenderId: "875091297043",
+      appId: "1:875091297043:web:0303e6a9cb70bcf32190e6",
+      measurementId: "G-P971C8RSXK"
+    };
+    /* ----------------------------------------------------------- */
+
+    /* 3) Init Firebase + Auth */
+    firebase.initializeApp(firebaseConfig);
+    const auth = firebase.auth();
+    const provider = new firebase.auth.GoogleAuthProvider();
+
+    /* 4) One function: sign in & print token */
+    async function signIn() {
+      try {
+        const { user } = await auth.signInWithPopup(provider);
+        const token    = await user.getIdToken();
+        console.log('ID Token →', token);
+        document.getElementById('token').textContent = token;
+      } catch (err) {
+        console.error('Sign-in error →', err);
+        alert(err.message);
+      }
+    }
+    /* Expose both names so any onclick works */
+    window.signIn = signIn;
+    window.signin = signIn;
+  </script>
+</head>
+
+<body style="font-family:sans-serif;">
+  <h2>Firebase ID-Token Helper</h2>
+  <button onclick="signIn()">Sign in with Google</button>
+  <p><strong>Token:</strong></p>
+  <code id="token" style="word-break:break-all;"></code>
+  <p>Open DevTools → Console to copy easily.</p>
+</body>
+</html>

@@ -1,0 +1,14 @@
+{
+  "first_name": "Sam",
+  "last_name": "Patel",
+  "grade_level": "10",
+  "support_staff": "Ms. Ng",
+  "dew_score": 3,
+  "notes": "auto risk test",
+  "domain_scores": [
+    { "domain_id": 1, "score": 2 },
+    { "domain_id": 2, "score": 2 },
+    { "domain_id": 3, "score": 1 },
+    { "domain_id": 4, "score": 3 }
+  ]
+}
