@@ -17,16 +17,17 @@ const roleCheck      = require('./middleware/roleCheck');
 const studentsRouter = require('./routes/students');
 const usersRouter    = require('./routes/users');
 const schoolsRouter  = require('./routes/schools');
+const surveysRouter = require('./routes/surveys');
+const riskDashboard = require('./routes/riskDashboard');
+const surveyStatus = require('./routes/surveyStatus');
 
 /* -------- mount your protected routes -------- */
 app.use('/students', auth, studentsRouter);
 app.use('/users',    auth, usersRouter);
-app.use(
-  '/schools',
-  auth,
-  roleCheck(['system_admin']),
-  schoolsRouter
-);
+app.use('/schools', auth, roleCheck(['system_admin']), schoolsRouter);
+app.use('/api/surveys', surveysRouter);
+app.use('/api/risk-dashboard', riskDashboard);
+app.use('/api/surveys/status', surveyStatus);
 
 /* -------- whoami endpoint -------- */
 app.get(

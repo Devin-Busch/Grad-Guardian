@@ -1,394 +1,166 @@
-/***************************************************************************
- * E:\gradGaurdian\school-risk-app\src\routes\students.js
- *
- * Full CRUD for students + domain scores + teacher notes + versioned docs
- * All audit-logged. 
- ***************************************************************************/
-const express       = require('express');
-const router        = express.Router();
-const db            = require('../db');
-const roleCheck     = require('../middleware/roleCheck');
-const { calculate } = require('../utils/riskEngine');
-const { logAudit }  = require('../utils/auditLogger');
+const express = require('express');
+const router = express.Router();
+const db = require('../utils/db');
+const auth = require('../middleware/auth');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 
-/* --------------------------------------------------------------------------
- * Helper: scope and role enforcement
- * ------------------------------------------------------------------------*/
-function sameSchoolOnly(req, res, studentRow) {
-  if (req.user.role === 'system_admin') {
-    return res.status(403).json({ error: 'System admin cannot access student data' });
+// Ensure upload directory exists
+const uploadDir = path.join(__dirname, '..', 'uploads');
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
+
+// Upload config
+const storage = multer.diskStorage({
+  destination: uploadDir,
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    cb(null, `${Date.now()}-${file.fieldname}${ext}`);
   }
-  if (req.user.role === 'student') {
-    if (req.user.uid !== studentRow.student_uid) {
-      return res.status(403).json({ error: 'Students can only access their own record.' });
-    }
-  } else {
-    if (studentRow.school_id !== req.user.school_id) {
-      return res.status(403).json({ error: 'Cross-school access denied.' });
-    }
+});
+const upload = multer({ storage });
+
+// List all students in the school
+router.get('/', auth, async (req, res) => {
+  try {
+    const result = await db.query(
+      `SELECT user_id, first_name, last_name, grade_level, dew_score, total_score
+       FROM users
+       WHERE role = 'student' AND school_id = $1
+       ORDER BY last_name, first_name`,
+      [req.user.school_id]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error('List students error:', err);
+    res.status(500).json({ error: 'Could not list students' });
   }
-}
+});
 
-/* ==========================================================================
- * GET /students      — list basic student info
- * ========================================================================*/
-router.get(
-  '/',
-  roleCheck(['teacher', 'school_admin']),
-  async (req, res) => {
-    try {
-      const result = await db.query(
-        `SELECT student_id, first_name, last_name, grade_level,
-                dew_score, total_score, risk_level
-         FROM students
-         WHERE school_id = $1
-         ORDER BY last_name, first_name`,
-        [req.user.school_id]
-      );
-      res.json(result.rows);
-    } catch (err) {
-      console.error('GET /students error →', err);
-      res.status(500).json({ error: 'Failed to list students' });
-    }
+// Get full student details
+router.get('/:id', auth, async (req, res) => {
+  const id = parseInt(req.params.id);
+  try {
+    const student = await db.query(
+      `SELECT user_id, first_name, last_name, grade_level, support_staff, dew_score,
+              total_score, notes, created_at, updated_at
+       FROM users
+       WHERE user_id = $1 AND school_id = $2 AND role = 'student'`,
+      [id, req.user.school_id]
+    );
+
+    const domains = await db.query(
+      `SELECT domain_name, score FROM student_domain_scores WHERE user_id = $1`,
+      [id]
+    );
+
+    const riskFactors = await db.query(
+      `SELECT factor_name FROM student_risk_factors WHERE user_id = $1`,
+      [id]
+    );
+
+    const supports = await db.query(
+      `SELECT support_name FROM supports WHERE user_id = $1`,
+      [id]
+    );
+
+    const docs = await db.query(
+      `SELECT filename, uploaded_at FROM student_documents WHERE user_id = $1`,
+      [id]
+    );
+
+    res.json({
+      ...student.rows[0],
+      domain_scores: domains.rows,
+      risk_factors: riskFactors.rows.map(r => r.factor_name),
+      supports: supports.rows.map(s => s.support_name),
+      documents: docs.rows
+    });
+  } catch (err) {
+    console.error('Fetch student error:', err);
+    res.status(500).json({ error: 'Could not fetch student' });
   }
-);
+});
 
-/* ==========================================================================
- * GET /students/:id   — full student + domain scores
- * ========================================================================*/
-router.get(
-  '/:id',
-  roleCheck(['teacher', 'school_admin', 'student']),
-  async (req, res) => {
-    const { id } = req.params;
-    try {
-      const studentRes = await db.query(
-        'SELECT * FROM students WHERE student_id = $1',
-        [id]
-      );
-      if (!studentRes.rows.length) return res.status(404).json({ error: 'Student not found' });
-      const student = studentRes.rows[0];
-      const deny = sameSchoolOnly(req, res, student);
-      if (deny) return;
+// Update student info
+router.put('/:id', auth, async (req, res) => {
+  const id = parseInt(req.params.id);
+  const { dew_score, total_score, notes, domain_scores, supports, risk_factors } = req.body;
 
-      const domains = await db.query(
-        `SELECT d.domain_id, d.domain_name, s.score
-         FROM student_domain_scores s
-         JOIN domains d ON d.domain_id = s.domain_id
-         WHERE s.student_id = $1`,
-        [id]
-      );
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
 
-      res.json({ ...student, domain_scores: domains.rows });
-    } catch (err) {
-      console.error('GET /students/:id error →', err);
-      res.status(500).json({ error: 'Failed to fetch student' });
-    }
-  }
-);
+    await client.query(
+      `UPDATE users SET dew_score = $1, total_score = $2, notes = $3, updated_at = NOW()
+       WHERE user_id = $4 AND school_id = $5 AND role = 'student'`,
+      [dew_score, total_score, notes, id, req.user.school_id]
+    );
 
-/* ==========================================================================
- * POST /students      — create student + domain scores
- * ========================================================================*/
-router.post(
-  '/',
-  roleCheck(['teacher', 'school_admin', 'student']),
-  async (req, res) => {
-    const {
-      first_name, last_name, grade_level,
-      support_staff, dew_score, notes,
-      domain_scores = []
-    } = req.body;
-
-    const domainMap = {};
-    domain_scores.forEach(ds => { domainMap[ds.domain_id] = ds.score });
-    const { total, level } = calculate(domainMap);
-
-    const school_id = req.user.role === 'student' ? req.body.school_id : req.user.school_id;
-
-    try {
-      await db.query('BEGIN');
-      const insStu = await db.query(
-        `INSERT INTO students
-           (school_id, first_name, last_name, grade_level, support_staff,
-            dew_score, total_score, risk_level, notes)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-         RETURNING student_id`,
-        [school_id, first_name, last_name, grade_level,
-         support_staff, dew_score, total, level, notes]
-      );
-      const studentId = insStu.rows[0].student_id;
-
-      const insScore = `INSERT INTO student_domain_scores
-                         (student_id, domain_id, score)
-                       VALUES ($1,$2,$3)`;
-      for (const ds of domain_scores) {
-        await db.query(insScore, [studentId, ds.domain_id, ds.score]);
-      }
-
-      await logAudit({
-        user_email: req.user.email,
-        role:       req.user.role,
-        school_id:  school_id,
-        action:     'create_student',
-        table:      'students',
-        record_id:  studentId,
-        changes:    { after: { first_name, last_name, grade_level } }
-      });
-
-      await db.query('COMMIT');
-      res.status(201).json({ student_id: studentId });
-    } catch (err) {
-      await db.query('ROLLBACK');
-      console.error('POST /students error →', err);
-      res.status(500).json({ error: 'Failed to create student' });
-    }
-  }
-);
-
-/* ==========================================================================
- * PUT /students/:id   — update student + domain scores
- * ========================================================================*/
-router.put(
-  '/:id',
-  roleCheck(['teacher', 'school_admin']),
-  async (req, res) => {
-    const { id } = req.params;
-    const {
-      first_name, last_name, grade_level,
-      support_staff, dew_score, notes,
-      domain_scores = []
-    } = req.body;
-
-    try {
-      const befRes = await db.query('SELECT * FROM students WHERE student_id = $1', [id]);
-      if (!befRes.rows.length) return res.status(404).json({ error: 'Student not found' });
-      const before = befRes.rows[0];
-      if (before.school_id !== req.user.school_id) {
-        return res.status(403).json({ error: 'Cross-school denied' });
-      }
-
-      const domainMap = {};
-      domain_scores.forEach(ds => { domainMap[ds.domain_id] = ds.score });
-      const { total, level } = calculate(domainMap);
-
-      await db.query('BEGIN');
-      await db.query(
-        `UPDATE students SET
-           first_name=$1, last_name=$2, grade_level=$3,
-           support_staff=$4, dew_score=$5,
-           total_score=$6, risk_level=$7, notes=$8,
-           updated_at=NOW()
-         WHERE student_id=$9`,
-        [first_name, last_name, grade_level,
-         support_staff, dew_score, total, level, notes, id]
-      );
-
-      await db.query('DELETE FROM student_domain_scores WHERE student_id=$1', [id]);
-      for (const ds of domain_scores) {
-        await db.query(insScore, [id, ds.domain_id, ds.score]);
-      }
-
-      await logAudit({
-        user_email: req.user.email,
-        role:       req.user.role,
-        school_id:  req.user.school_id,
-        action:     'update_student',
-        table:      'students',
-        record_id:  id,
-        changes:    { before: { first_name: before.first_name, last_name: before.last_name }, after: { first_name, last_name } }
-      });
-
-      await db.query('COMMIT');
-      res.json({ message: 'Student updated' });
-    } catch (err) {
-      await db.query('ROLLBACK');
-      console.error('PUT /students/:id error →', err);
-      res.status(500).json({ error: 'Failed to update student' });
-    }
-  }
-);
-
-/* ==========================================================================
- * DELETE /students/:id  — delete student
- * ========================================================================*/
-router.delete(
-  '/:id',
-  roleCheck(['teacher', 'school_admin']),
-  async (req, res) => {
-    const { id } = req.params;
-    try {
-      const befRes = await db.query('SELECT * FROM students WHERE student_id=$1', [id]);
-      if (!befRes.rows.length) return res.status(404).json({ error: 'Student not found' });
-      const before = befRes.rows[0];
-      if (before.school_id !== req.user.school_id) {
-        return res.status(403).json({ error: 'Cross-school denied' });
-      }
-
-      await db.query('DELETE FROM students WHERE student_id=$1', [id]);
-      await logAudit({
-        user_email: req.user.email,
-        role:       req.user.role,
-        school_id:  req.user.school_id,
-        action:     'delete_student',
-        table:      'students',
-        record_id:  id,
-        changes:    { before }
-      });
-
-      res.json({ message: 'Student deleted' });
-    } catch (err) {
-      console.error('DELETE /students/:id error →', err);
-      res.status(500).json({ error: 'Failed to delete student' });
-    }
-  }
-);
-
-/* ==========================================================================
- * Document API: versioned docs
- * ========================================================================*/
-// GET latest document
-router.get(
-  '/:id/document',
-  roleCheck(['teacher', 'school_admin', 'student']),
-  async (req, res) => {
-    const { id } = req.params;
-    try {
-      const docRes = await db.query(
-        'SELECT d.document_id, d.content, d.updated_at FROM student_documents d JOIN students s ON s.student_id=d.student_id WHERE s.student_id=$1',
-        [id]
-      );
-      if (!docRes.rows.length) return res.status(404).json({ error: 'Document not found.' });
-      res.json(docRes.rows[0]);
-    } catch (err) {
-      console.error('GET /students/:id/document error →', err);
-      res.status(500).json({ error: 'Failed to fetch document.' });
-    }
-  }
-);
-
-// PUT new document revision
-/**
- * PUT /students/:id/document  — upsert versioned document
- */
-router.put(
-  '/:id/document',
-  roleCheck(['teacher', 'school_admin']),
-  async (req, res) => {
-    const { id } = req.params;
-    const { content } = req.body;
-    if (typeof content !== 'string') {
-      return res.status(400).json({ error: 'Content must be a string.' });
-    }
-
-    try {
-      await db.query('BEGIN');
-
-      // 1) Try to fetch existing document_id
-      const docRes = await db.query(
-        'SELECT document_id FROM student_documents WHERE student_id = $1',
-        [id]
-      );
-
-      let document_id;
-      if (docRes.rows.length) {
-        // already exists
-        document_id = docRes.rows[0].document_id;
-      } else {
-        // first save → create master document
-        const ins = await db.query(
-          `INSERT INTO student_documents (student_id, content)
-           VALUES ($1, $2)
-           RETURNING document_id`,
-          [id, content]
-        );
-        document_id = ins.rows[0].document_id;
-      }
-
-      // 2) Insert a revision
-      await db.query(
-        `INSERT INTO student_doc_revisions
-           (document_id, content, author_email)
+    await client.query(`DELETE FROM student_domain_scores WHERE user_id = $1`, [id]);
+    for (const { domain_name, score } of domain_scores || []) {
+      await client.query(
+        `INSERT INTO student_domain_scores (user_id, domain_name, score)
          VALUES ($1, $2, $3)`,
-        [document_id, content, req.user.email]
+        [id, domain_name, score]
       );
-
-      // 3) Always update the master record to latest content/timestamp
-      await db.query(
-        `UPDATE student_documents
-           SET content = $1, updated_at = NOW()
-         WHERE document_id = $2`,
-        [content, document_id]
-      );
-
-      // 4) Audit log
-      await logAudit({
-        user_email: req.user.email,
-        role:       req.user.role,
-        school_id:  req.user.school_id,
-        action:     'update_document',
-        table:      'student_documents',
-        record_id:  document_id,
-        changes:    { after: { content } }
-      });
-
-      await db.query('COMMIT');
-      return res.json({ message: 'Document saved.' });
-    } catch (err) {
-      await db.query('ROLLBACK');
-      console.error('PUT /students/:id/document error →', err);
-      return res.status(500).json({ error: 'Failed to save document.' });
     }
-  }
-);
 
-
-// GET revision list
-router.get(
-  '/:id/document/revisions',
-  roleCheck(['teacher', 'school_admin']),
-  async (req, res) => {
-    const { id } = req.params;
-    try {
-      const docIdRes = await db.query('SELECT document_id FROM student_documents WHERE student_id=$1', [id]);
-      if (!docIdRes.rows.length) return res.status(404).json({ error: 'Document not found.' });
-      const document_id = docIdRes.rows[0].document_id;
-
-      const revs = await db.query(
-        `SELECT revision_id, author_email, created_at
-         FROM student_doc_revisions
-         WHERE document_id=$1
-         ORDER BY created_at DESC`,
-        [document_id]
+    await client.query(`DELETE FROM supports WHERE user_id = $1`, [id]);
+    for (const support of supports || []) {
+      await client.query(
+        `INSERT INTO supports (user_id, support_name)
+         VALUES ($1, $2)`,
+        [id, support]
       );
-      res.json(revs.rows);
-    } catch (err) {
-      console.error('GET /students/:id/document/revisions error →', err);
-      res.status(500).json({ error: 'Failed to fetch revisions.' });
     }
-  }
-);
 
-// GET single revision
-router.get(
-  '/:id/document/revisions/:rev',
-  roleCheck(['teacher', 'school_admin']),
-  async (req, res) => {
-    const { rev } = req.params;
-    try {
-      const revRes = await db.query(
-        `SELECT revision_id, content, author_email, created_at
-         FROM student_doc_revisions
-         WHERE revision_id=$1`,
-        [rev]
+    await client.query(`DELETE FROM student_risk_factors WHERE user_id = $1`, [id]);
+    for (const factor of risk_factors || []) {
+      await client.query(
+        `INSERT INTO student_risk_factors (user_id, factor_name)
+         VALUES ($1, $2)`,
+        [id, factor]
       );
-      if (!revRes.rows.length) return res.status(404).json({ error: 'Revision not found.' });
-      res.json(revRes.rows[0]);
-    } catch (err) {
-      console.error('GET /students/:id/document/revisions/:rev error →', err);
-      res.status(500).json({ error: 'Failed to fetch revision.' });
     }
+
+    await client.query(
+      `INSERT INTO audit_log (user_email, role, action, table_name, record_id, changes)
+       VALUES ($1, $2, 'update', 'users', $3, $4)`,
+      [req.user.email, req.user.role, id, req.body]
+    );
+
+    await client.query('COMMIT');
+    res.sendStatus(204);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Update student error:', err);
+    res.status(500).json({ error: 'Could not update student' });
+  } finally {
+    client.release();
   }
-);
+});
+
+// Upload document
+router.post('/:id/documents', auth, upload.single('document'), async (req, res) => {
+  const id = parseInt(req.params.id);
+  try {
+    await db.query(
+      `INSERT INTO student_documents (user_id, filename)
+       VALUES ($1, $2)`,
+      [id, req.file.filename]
+    );
+    res.sendStatus(204);
+  } catch (err) {
+    console.error('Upload doc error:', err);
+    res.status(500).json({ error: 'Failed to upload document' });
+  }
+});
+
+// Download document
+router.get('/:id/documents/:filename', auth, async (req, res) => {
+  const filePath = path.join(uploadDir, req.params.filename);
+  res.download(filePath);
+});
 
 module.exports = router;

@@ -40,30 +40,35 @@ router.get(
 );
 
 /**
- * POST /users  — invite new teacher
+ * POST /users  — add new user with role
  */
 router.post(
   '/',
   roleCheck(['school_admin', 'system_admin']),
   async (req, res) => {
-    const { email, school_id: bodySchoolId } = req.body;
-    if (!email) {
-      return res.status(400).json({ error: 'Missing email in request body.' });
+    const { email, role, school_id: bodySchoolId } = req.body;
+
+    if (!email || !role) {
+      return res.status(400).json({ error: 'Missing email or role.' });
     }
+
+    const validRoles = ['teacher', 'student', 'school_admin'];
+    if (!validRoles.includes(role)) {
+      return res.status(400).json({ error: 'Invalid role specified.' });
+    }
+
     const school_id = req.user.role === 'system_admin'
       ? (bodySchoolId || req.user.school_id)
       : req.user.school_id;
 
     try {
-      // Create teacher account
       await db.query(
         `INSERT INTO users (email, role, school_id)
-         VALUES ($1, 'teacher', $2)
+         VALUES ($1, $2, $3)
          ON CONFLICT (email) DO NOTHING`,
-        [email, school_id]
+        [email, role, school_id]
       );
 
-      // Audit log
       await logAudit({
         user_email: req.user.email,
         role:       req.user.role,
@@ -71,16 +76,26 @@ router.post(
         action:     'invite_user',
         table:      'users',
         record_id:  email,
-        changes:    { after: { email, role: 'teacher', school_id } }
+        changes:    { after: { email, role, school_id } }
       });
 
-      res.status(201).json({ message: `Teacher account created for ${email}` });
+      if (role === 'student') {
+        await db.query(
+          `INSERT INTO students (first_name, last_name, grade_level, school_id)
+          VALUES ('', '', '', $1)`,
+          [school_id]
+  );
+}
+
+
+      res.status(201).json({ message: `${role} account created for ${email}` });
     } catch (err) {
       console.error('POST /users error →', err);
       res.status(500).json({ error: 'Failed to create user' });
     }
   }
 );
+
 
 /**
  * PUT /users/:email  — update role

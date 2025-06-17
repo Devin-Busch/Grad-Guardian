@@ -1,168 +1,113 @@
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import axios from 'axios';
 
-const VALID_ROLES = ['system_admin', 'school_admin', 'teacher', 'student'];
-
 export default function UsersAdmin({ token }) {
-  const [rows, setRows]           = useState([]);
-  const [loading, setLoading]     = useState(true);
-  const [error, setError]         = useState(null);
-  const [updatingEmail, setUpdatingEmail] = useState(null);
+  const [email, setEmail] = useState('');
+  const [role, setRole]   = useState('teacher');
+  const [users, setUsers] = useState([]);
+  const [error, setError] = useState(null);
 
-  // Invite states
-  const [newEmail, setNewEmail]   = useState('');
-  const [inviting, setInviting]   = useState(false);
-  const [inviteError, setInviteError]     = useState(null);
-  const [inviteMessage, setInviteMessage] = useState(null);
-
-  const api = axios.create({
-    baseURL: 'http://localhost:3000',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json'
-    }
-  });
-
-  const fetchUsers = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await api.get('/users');
-      setRows(res.data);
-    } catch (err) {
-      setError(err.response?.data?.error || err.message);
-    } finally {
-      setLoading(false);
-    }
+  const fetchUsers = () => {
+    axios.get('http://localhost:3000/users', {
+      headers: { Authorization: `Bearer ${token}` }
+    })
+    .then(res => setUsers(res.data))
+    .catch(err => {
+      console.error(err);
+      setError('Failed to load users');
+    });
   };
 
-  useEffect(() => { fetchUsers(); }, []);
+  useEffect(fetchUsers, [token]);
 
-  const handleChangeRole = async (email, newRole) => {
-    setUpdatingEmail(email);
-    setError(null);
-    try {
-      await api.put(`/users/${encodeURIComponent(email)}`, { role: newRole });
-      await fetchUsers();
-    } catch (err) {
-      setError(err.response?.data?.error || err.message);
-    } finally {
-      setUpdatingEmail(null);
-    }
+  const handleAdd = () => {
+    if (!email.trim()) return;
+
+    axios.post('http://localhost:3000/users', { email, role }, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      }
+    })
+    .then(() => {
+      setEmail('');
+      setRole('teacher');
+      fetchUsers();
+    })
+    .catch(err => {
+      console.error(err);
+      setError('Failed to add user');
+    });
   };
 
-  const handleInvite = async (e) => {
-    e.preventDefault();
-    setInviting(true);
-    setInviteError(null);
-    setInviteMessage(null);
-    try {
-      await api.post('/users', { email: newEmail });
-      setInviteMessage(`Invited ${newEmail} as a teacher`);
-      setNewEmail('');
-      await fetchUsers();
-    } catch (err) {
-      setInviteError(err.response?.data?.error || err.message);
-    } finally {
-      setInviting(false);
-    }
+  const handleDelete = (emailToDelete) => {
+    if (!window.confirm(`Delete user ${emailToDelete}?`)) return;
+
+    axios.delete(`http://localhost:3000/users/${encodeURIComponent(emailToDelete)}`, {
+      headers: { Authorization: `Bearer ${token}` }
+    })
+    .then(fetchUsers)
+    .catch(err => {
+      console.error(err);
+      setError('Failed to delete user');
+    });
   };
 
-  const handleDelete = async (email) => {
-    if (!window.confirm(`Delete user ${email}?`)) return;
-    setUpdatingEmail(email);
-    setError(null);
-    try {
-      await api.delete(`/users/${encodeURIComponent(email)}`);
-      await fetchUsers();
-    } catch (err) {
-      setError(err.response?.data?.error || err.message);
-    } finally {
-      setUpdatingEmail(null);
-    }
-  };
+  const grouped = users.reduce((acc, user) => {
+    acc[user.role] = acc[user.role] || [];
+    acc[user.role].push(user);
+    return acc;
+  }, {});
 
   return (
-    <div>
-      <h3>User Management</h3>
+    <div style={{ padding: 24, fontFamily: 'sans-serif' }}>
+      <h2>School Admin: Manage Users</h2>
+      {error && <p style={{ color: 'red' }}>{error}</p>}
 
-      {/* Invite form */}
       <div style={{ marginBottom: 20 }}>
-        <form
-          onSubmit={handleInvite}
-          style={{ display: 'flex', gap: 8, alignItems: 'center' }}
-        >
-          <input
-            type="email"
-            placeholder="teacher@example.com"
-            required
-            value={newEmail}
-            disabled={inviting}
-            onChange={(e) => setNewEmail(e.target.value)}
-            style={{ flex: 1, padding: '4px 8px' }}
-          />
-          <button type="submit" disabled={inviting || !newEmail}>
-            {inviting ? 'Inviting…' : 'Invite New Teacher'}
-          </button>
-        </form>
-        {inviteError && <p style={{ color: 'red' }}>{inviteError}</p>}
-        {inviteMessage && <p style={{ color: 'green' }}>{inviteMessage}</p>}
+        <h4>Add User</h4>
+        <input
+          type="email"
+          placeholder="email@school.org"
+          value={email}
+          onChange={e => setEmail(e.target.value)}
+          style={{ marginRight: 8 }}
+        />
+        <select value={role} onChange={e => setRole(e.target.value)} style={{ marginRight: 8 }}>
+          <option value="teacher">Teacher</option>
+          <option value="student">Student</option>
+          <option value="school_admin">School Admin</option>
+        </select>
+        <button onClick={handleAdd}>Add</button>
       </div>
 
-      {/* Users table */}
-      {loading ? (
-        <p>Loading users…</p>
-      ) : error ? (
-        <p style={{ color: 'red' }}>Error: {error}</p>
-      ) : rows.length === 0 ? (
-        <p>No users found.</p>
-      ) : (
-        <table
-          border="1"
-          cellPadding="6"
-          style={{ borderCollapse: 'collapse', width: '100%' }}
-        >
-          <thead>
-            <tr>
-              <th>Email</th>
-              <th>Role</th>
-              <th>School ID</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((u) => (
-              <tr key={u.email}>
-                <td>{u.email}</td>
-                <td>
-                  <select
-                    value={u.role}
-                    disabled={updatingEmail === u.email}
-                    onChange={(e) =>
-                      handleChangeRole(u.email, e.target.value)
-                    }
-                  >
-                    {VALID_ROLES.map((roleOption) => (
-                      <option key={roleOption} value={roleOption}>
-                        {roleOption}
-                      </option>
-                    ))}
-                  </select>
-                </td>
-                <td align="center">{u.school_id ?? '—'}</td>
-                <td align="center">
-                  <button
-                    onClick={() => handleDelete(u.email)}
-                    disabled={updatingEmail === u.email}
-                  >
-                    Delete
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+      {['teacher', 'student', 'school_admin'].map(r => (
+        grouped[r] && (
+          <div key={r} style={{ marginBottom: 20 }}>
+            <h4>{r.charAt(0).toUpperCase() + r.slice(1)}s</h4>
+            <table border="1" cellPadding="6">
+              <thead>
+                <tr>
+                  <th>Email</th>
+                  <th>Created</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {grouped[r].map(u => (
+                  <tr key={u.email}>
+                    <td>{u.email}</td>
+                    <td>{new Date(u.created_at).toLocaleString()}</td>
+                    <td>
+                      <button onClick={() => handleDelete(u.email)}>🗑️ Delete</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )
+      ))}
     </div>
   );
 }

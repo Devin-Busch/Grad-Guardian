@@ -1,22 +1,23 @@
-// E:\gradGaurdian\school-risk-frontend\src\App.jsx
+// src/App.jsx
 import React, { useState } from 'react';
 import './App.css';
 
 import {
   createBrowserRouter,
   RouterProvider,
-  Route,
   Link,
   Navigate
 } from 'react-router-dom';
-
 import axios from 'axios';
 
-import SurveyForm   from './SurveyForm.jsx';
-import StudentsList from './StudentsList.jsx';
-import UsersAdmin   from './UsersAdmin.jsx';
-import SystemAdmin  from './SystemAdmin.jsx';
+import SurveyOne     from './SurveyOne.jsx';
+import SurveyTwo     from './SurveyTwo.jsx';
+import StudentHome   from './StudentHome.jsx';
+import RiskDashboard from './RiskDashboard.jsx';
+import UsersAdmin    from './UsersAdmin.jsx';
+import SystemAdmin   from './SystemAdmin.jsx';
 
+/* ---------- Firebase ---------- */
 import { initializeApp } from 'firebase/app';
 import {
   getAuth,
@@ -24,7 +25,6 @@ import {
   signInWithPopup
 } from 'firebase/auth';
 
-/* ---------- Firebase init ---------- */
 initializeApp({
   apiKey:      import.meta.env.VITE_FIREBASE_API_KEY,
   authDomain:  import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
@@ -34,28 +34,28 @@ initializeApp({
 const auth     = getAuth();
 const provider = new GoogleAuthProvider();
 
-export default function App() {
-  const [token, setTok]         = useState(null);
-  const [email, setMail]        = useState(null);
-  const [userInfo, setUserInfo] = useState(null);  // { email, role, school_id }
-  const [studentId, setStudent] = useState(null);
-  const [err, setErr]           = useState(null);
+/* ---------- API base ---------- */
+const API_BASE =
+  import.meta.env.VITE_API_URL?.replace(/\/+$/, '') || '';
 
+export default function App() {
+  const [token, setToken]   = useState(null);
+  const [email, setEmail]   = useState(null);
+  const [userInfo, setInfo] = useState(null);
+  const [err, setErr]       = useState(null);
+
+  /* ----- Auth helpers ----- */
   const login = async () => {
     try {
       const { user } = await signInWithPopup(auth, provider);
       const t = await user.getIdToken();
-      setTok(t);
-      setMail(user.email);
+      setToken(t);
+      setEmail(user.email);
 
-      // Fetch our custom profile (role & school_id)
-      const res = await axios.get('http://localhost:3000/whoami', {
+      const { data } = await axios.get(`${API_BASE}/whoami`, {
         headers: { Authorization: `Bearer ${t}` }
       });
-      setUserInfo(res.data);
-
-      // NO manual window.location.replace() here!
-      // We let the router's catch-all redirect trigger on mount.
+      setInfo(data);
     } catch (e) {
       setErr(e.message);
     }
@@ -63,90 +63,109 @@ export default function App() {
 
   const logout = () => {
     auth.signOut();
-    setTok(null);
-    setMail(null);
-    setUserInfo(null);
-    setStudent(null);
+    setToken(null);
+    setEmail(null);
+    setInfo(null);
   };
 
-  // 1) Not logged in yet
+  /* ----- Pre-auth screens ----- */
   if (!token) {
     return (
-      <div style={{ padding:24, fontFamily:'sans-serif' }}>
+      <div style={{ padding: 24 }}>
         <h2>School-Risk Prototype</h2>
         <button onClick={login}>Sign in with Google</button>
-        {err && <p style={{ color:'red' }}>{err}</p>}
+        {err && <p style={{ color: 'red' }}>{err}</p>}
       </div>
     );
   }
-
-  // 2) Waiting for /whoami
   if (!userInfo) {
-    return (
-      <div style={{ padding:24, fontFamily:'sans-serif' }}>
-        <p>Loading your profile…</p>
-      </div>
-    );
+    return <p style={{ padding: 24 }}>Loading your profile…</p>;
   }
 
-  // Layout wrapper
+  /* ----- Shared layout ----- */
   const Layout = ({ children }) => (
-    <div style={{ padding:24, fontFamily:'sans-serif' }}>
+    <div style={{ padding: 24 }}>
       <h2>School-Risk Prototype</h2>
       <p>
         Signed in as <strong>{email}</strong>{' '}
         <button onClick={logout}>Sign out</button>
       </p>
-      <nav style={{ marginBottom:16 }}>
-        {userInfo.role === 'student'      && <Link to="/">Survey</Link>}
-        {userInfo.role === 'teacher'      && <Link to="/staff">Staff View</Link>}
+
+      <nav style={{ marginBottom: 16 }}>
+        {userInfo.role === 'student'      && <Link to="/student">Surveys</Link>}
+        {userInfo.role === 'teacher'      && <Link to="/staff">Risk Dashboard</Link>}
         {userInfo.role === 'school_admin' && <Link to="/admin">Admin</Link>}
         {userInfo.role === 'system_admin' && <Link to="/system">System Admin</Link>}
       </nav>
+
       {children}
-      {err && <p style={{ color:'red' }}>{err}</p>}
+      {err && <p style={{ color: 'red' }}>{err}</p>}
     </div>
   );
 
-  // 3) Define the single allowed route per role
-  let routes = [];
+  /* ----- Role->home path ----- */
+  const homePath =
+    userInfo.role === 'student'      ? '/student' :
+    userInfo.role === 'teacher'      ? '/staff'   :
+    userInfo.role === 'school_admin' ? '/admin'   :
+    userInfo.role === 'system_admin' ? '/system'  :
+    '/';     // fallback for unknown role
+
+  /* ----- Build routes ----- */
+  const routes = [
+    { path: '/', element: <Navigate to={homePath} replace /> }
+  ];
+
   switch (userInfo.role) {
+    /* --- Student --- */
     case 'student':
-      routes = [
+      routes.push(
         {
-          path: '/',
+          path: '/student',
           element: (
             <Layout>
-              {studentId ? (
-                <p style={{ color:'green' }}>
-                  Survey saved! id=<code>{studentId}</code>
-                </p>
-              ) : (
-                <SurveyForm token={token} onCreated={setStudent} />
-              )}
+              <StudentHome token={token} />
             </Layout>
           )
         },
-        { path: '*', element: <Navigate to="/" replace /> }
-      ];
+        {
+          path: '/survey/1',
+          element: (
+            <Layout>
+              <SurveyOne token={token} />
+            </Layout>
+          )
+        },
+        {
+          path: '/survey/2',
+          element: (
+            <Layout>
+              <SurveyTwo token={token} />
+            </Layout>
+          )
+        },
+        { path: '*', element: <Navigate to="/student" replace /> }
+      );
       break;
 
+    /* --- Teacher --- */
     case 'teacher':
-      routes = [
+      routes.push(
         {
           path: '/staff',
           element: (
             <Layout>
-              <StudentsList token={token} />
+              <RiskDashboard token={token} />
             </Layout>
           )
         },
         { path: '*', element: <Navigate to="/staff" replace /> }
-      ];
+      );
       break;
 
+    /* --- School Admin --- */
     case 'school_admin':
-      routes = [
+      routes.push(
         {
           path: '/admin',
           element: (
@@ -156,11 +175,12 @@ export default function App() {
           )
         },
         { path: '*', element: <Navigate to="/admin" replace /> }
-      ];
+      );
       break;
 
+    /* --- System Admin --- */
     case 'system_admin':
-      routes = [
+      routes.push(
         {
           path: '/system',
           element: (
@@ -170,11 +190,11 @@ export default function App() {
           )
         },
         { path: '*', element: <Navigate to="/system" replace /> }
-      ];
+      );
       break;
 
     default:
-      routes = [{ path: '*', element: <Navigate to="/" replace /> }];
+      routes.push({ path: '*', element: <Navigate to="/" replace /> });
   }
 
   const router = createBrowserRouter(routes, {

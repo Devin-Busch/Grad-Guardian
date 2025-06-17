@@ -3,11 +3,16 @@ school-risk-app/node_modules/
 school-risk-frontend/node_modules/
 
 # Environment variables
-school-risk-app/.env
-school-risk-frontend/.env
+#school-risk-app/.env
+#school-risk-frontend/.env
 
 # Logs
 *.log
 
 # DB dumps (optional)
-school-risk-app/db/data.sql
+#school-risk-app/db/data.sql
+
+school-risk-app/firebase-service-account.json
+school-risk-app/serviceAccountKey.json
+git-filter-repo.exe
+
